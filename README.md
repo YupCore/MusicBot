@@ -561,7 +561,7 @@ Traditional Discord bots stream directly from YouTube/Spotify/SoundCloud URLs, w
 - Naming: `track_[MD5 hash].opus` to prevent conflicts
 
 **Download Process:**
-- Uses `youtube-dl-exec` with best audio format selection
+- Uses `yt-dlp` with best audio format selection
 - FFmpeg transcodes to Opus for Discord's native codec
 - Parallel downloads for multiple queued tracks
 - Retry logic for failed downloads with fallback streaming

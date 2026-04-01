@@ -1,0 +1,8 @@
+node_modules/
+audio_cache/
+bin/*
+!bin/.gitkeep
+cookies.txt
+package-lock.json
+.env
+plans/

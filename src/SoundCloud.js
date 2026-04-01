@@ -1,4 +1,4 @@
-const youtubedl = require('youtube-dl-exec');
+const YtDlp = require('./YtDlp');
 const axios = require('axios');
 const config = require('../config');
 const LanguageManager = require('./LanguageManager');
@@ -20,7 +20,7 @@ class SoundCloud {
             // SoundCloud search: "ytsearch5:query site:soundcloud.com"
             const searchQuery = `ytsearch${limit}:${query} site:soundcloud.com`;
 
-            const results = await youtubedl(searchQuery, {
+            const results = await YtDlp.runJson(searchQuery, {
                 dumpSingleJson: true,
                 flatPlaylist: true,
                 noCheckCertificates: true,
@@ -60,7 +60,7 @@ class SoundCloud {
 
 
             // Get SoundCloud info using yt-dlp
-            const info = await youtubedl(url, {
+            const info = await YtDlp.runJson(url, {
                 dumpSingleJson: true,
                 noCheckCertificates: true,
                 noWarnings: true,
@@ -85,7 +85,7 @@ class SoundCloud {
 
 
             // Get audio stream using yt-dlp
-            const result = await youtubedl(url, {
+            const result = await YtDlp.run(url, {
                 format: 'bestaudio/best',
                 getUrl: true,
                 noCheckCertificates: true,
@@ -111,7 +111,7 @@ class SoundCloud {
 
 
             // Get playlist info using yt-dlp
-            const result = await youtubedl(url, {
+            const result = await YtDlp.runJson(url, {
                 dumpSingleJson: true,
                 flatPlaylist: true,
                 noCheckCertificates: true,
@@ -154,7 +154,7 @@ class SoundCloud {
 
             // Use yt-dlp for SoundCloud user profile
             // Get user's latest tracks
-            const result = await youtubedl(userUrl, {
+            const result = await YtDlp.runJson(userUrl, {
                 dumpSingleJson: true,
                 flatPlaylist: true,
                 playlistEnd: limit,
@@ -255,7 +255,7 @@ class SoundCloud {
             }
 
             // URL validation with yt-dlp
-            const info = await youtubedl(url, {
+            const info = await YtDlp.runJson(url, {
                 dumpSingleJson: true,
                 noCheckCertificates: true,
                 noWarnings: true,

@@ -1,4 +1,4 @@
-const youtubedl = require('youtube-dl-exec');
+const YtDlp = require('./YtDlp');
 const config = require('../config');
 const LanguageManager = require('./LanguageManager');
 
@@ -8,6 +8,8 @@ class YouTube {
         const baseOptions = {
             noCheckCertificates: true,
             noWarnings: true,
+            retries: 3,
+            fragmentRetries: 3,
             // User-Agent header ekle
             addHeader: [
                 'referer:youtube.com',
@@ -16,11 +18,18 @@ class YouTube {
             ...extraOptions
         };
 
-        // Cookie ayarlarını ekle (eğer varsa)
-        if (config.ytdl.cookiesFromBrowser) {
+        // Auth öncelik sırası: PO Token > Browser Cookie > Cookie Dosyası > iOS client (fallback)
+        if (config.ytdl.poToken) {
+            // PO Token varsa web client'ı ile yüksek kaliteli stream
+            baseOptions.extractorArgs = `youtube:po_token=web+${config.ytdl.poToken};player_client=web`;
+        } else if (config.ytdl.cookiesFromBrowser) {
             baseOptions.cookiesFromBrowser = config.ytdl.cookiesFromBrowser;
         } else if (config.ytdl.cookiesFile) {
             baseOptions.cookies = config.ytdl.cookiesFile;
+        } else {
+            // Auth yapılandırılmamışsa iOS client kullan.
+            // Bu, VPS/sunucu IP'lerinde YouTube'un bot tespitini cookie veya token gerektirmeden atlar.
+            baseOptions.extractorArgs = 'youtube:player_client=ios';
         }
 
         return baseOptions;
@@ -39,7 +48,7 @@ class YouTube {
             // Use yt-dlp for YouTube search
             const searchQuery = `ytsearch${limit}:${query}`;
 
-            const results = await youtubedl(searchQuery, this.getYtDlpOptions({
+            const results = await YtDlp.runJson(searchQuery, this.getYtDlpOptions({
                 dumpSingleJson: true,
                 flatPlaylist: true,
             }));
@@ -92,6 +101,7 @@ class YouTube {
             return tracks;
 
         } catch (error) {
+            console.error('[YouTube] search() failed:', error.message || error);
             return [];
         }
     }
@@ -100,13 +110,13 @@ class YouTube {
         try {
 
 
-            const info = await youtubedl(url, this.getYtDlpOptions({
+            const info = await YtDlp.runJson(url, this.getYtDlpOptions({
                 dumpSingleJson: true,
                 preferFreeFormats: true,
             }));
 
             if (!info) {
-                const errorMsg = guildId ? await LanguageManager.getTranslation(guildId, 'youtube.no_info_returned') : 'No info returned from youtube-dl';
+                const errorMsg = guildId ? await LanguageManager.getTranslation(guildId, 'youtube.no_info_returned') : 'No info returned from yt-dlp';
                 throw new Error(errorMsg);
             }
 
@@ -132,6 +142,7 @@ class YouTube {
             return track;
 
         } catch (error) {
+            console.error('[YouTube] getInfo() failed:', error.message || error);
             return null;
         }
     }
@@ -146,7 +157,7 @@ class YouTube {
             }
 
             // Get stream URL with simple format
-            const info = await youtubedl(url, this.getYtDlpOptions({
+            const info = await YtDlp.runJson(url, this.getYtDlpOptions({
                 dumpSingleJson: true,
                 format: 'bestaudio/best',
             }));
@@ -186,7 +197,7 @@ class YouTube {
     static async getPlaylist(url, guildId = null) {
         try {
 
-            const info = await youtubedl(url, this.getYtDlpOptions({
+            const info = await YtDlp.runJson(url, this.getYtDlpOptions({
                 dumpSingleJson: true,
                 flatPlaylist: true,
             }));
@@ -245,6 +256,7 @@ class YouTube {
             };
 
         } catch (error) {
+            console.error('[YouTube] getPlaylist() failed:', error.message || error);
             return null;
         }
     }
@@ -341,7 +353,7 @@ class YouTube {
             }
 
             // Try to get basic info to validate
-            const info = await youtubedl(url, this.getYtDlpOptions({
+            const info = await YtDlp.runJson(url, this.getYtDlpOptions({
                 dumpSingleJson: true,
                 skipDownload: true,
             }));

@@ -10,22 +10,33 @@ const {
 const { EmbedBuilder } = require('discord.js');
 const config = require('../config');
 const YouTube = require('./YouTube');
+const YtDlp = require('./YtDlp');
 const Spotify = require('./Spotify');
 const SoundCloud = require('./SoundCloud');
 const DirectLink = require('./DirectLink');
 const LanguageManager = require('./LanguageManager');
+const ErrorHandler = require('./ErrorHandler');
 const PlayerStateManager = require('./PlayerStateManager');
 const LyricsManager = require('./LyricsManager');
 const prism = require('prism-media');
-const ffmpegPath = require('ffmpeg-static');
-const { promisify } = require('util');
-const chalk = require('chalk');
-const { pipeline, Readable } = require('stream');
-const pipelineAsync = promisify(pipeline);
+const { Readable } = require('stream');
 const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+
+const BIN_DIR = path.join(__dirname, '..', 'bin');
+const ffmpegPath = path.join(BIN_DIR, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
+const ffmpegEnv = {
+    ...process.env,
+    PATH: process.platform === 'win32'
+        ? `${BIN_DIR};${process.env.PATH || ''}`
+        : `${BIN_DIR}:${process.env.PATH || ''}`
+};
+
+// prism-media discovers ffmpeg via process-level PATH (FFmpeg.getInfo),
+// so we must expose our bundled ./bin runtime globally as well.
+process.env.PATH = ffmpegEnv.PATH;
 
 // Cache directory for downloaded audio files
 const CACHE_DIR = path.join(__dirname, '..', 'audio_cache');
@@ -606,11 +617,9 @@ class MusicPlayer {
                 }
             }
 
-            // For YouTube, Spotify (via YouTube), SoundCloud (via YouTube) - use youtube-dl-exec
+            // For YouTube, Spotify (via YouTube), SoundCloud (via YouTube) - use yt-dlp
             if (track.platform === 'youtube' || track.platform === 'spotify' || track.platform === 'soundcloud') {
-                const youtubedl = require('youtube-dl-exec');
-                
-                await youtubedl(downloadUrl, {
+                await YtDlp.download(downloadUrl, {
                     output: filepath,
                     format: 'bestaudio',
                     noCheckCertificates: true,
@@ -650,6 +659,7 @@ class MusicPlayer {
                 // Transcode to opus
                 const ffmpegProcess = new prism.FFmpeg({
                     command: ffmpegPath,
+                    env: ffmpegEnv,
                     args: [
                         '-i', 'pipe:0',
                         '-f', 'opus',
@@ -944,6 +954,7 @@ class MusicPlayer {
                     
                     const ffmpegProcess = new prism.FFmpeg({
                         command: ffmpegPath,
+                        env: ffmpegEnv,
                         args: [
                             ...seekArgs,  // Add seek if resuming
                             '-analyzeduration', '0',
@@ -985,6 +996,7 @@ class MusicPlayer {
                 
                 const ffmpegProcess = new prism.FFmpeg({
                     command: ffmpegPath,
+                    env: ffmpegEnv,
                     args: [
                         ...seekArgs,  // Add seek BEFORE input for faster seeking
                         '-i', downloadedFile,
@@ -1073,8 +1085,8 @@ class MusicPlayer {
                 this.currentDownloadedFile = null;
             }
 
-            await this.handleError(error);
-            const errorMsg = await LanguageManager.getTranslation(this.guild.id, 'musicplayer.track_could_not_play');
+            const errorMsg = await ErrorHandler.handle(error, this.guild.id, 'MusicPlayer.play');
+            await this.handleError(error, errorMsg);
             return { success: false, message: errorMsg };
         }
     }
@@ -1726,16 +1738,26 @@ class MusicPlayer {
         }
     }
 
-    async handleError(error) {
+    async handleError(error, userMessage = null) {
 
         // Try to skip to next track on error
         if (this.queue.length > 0) {
+            // Send error to text channel before skipping
+            if (userMessage && this.textChannel) {
+                try {
+                    await this.textChannel.send(userMessage);
+                } catch (_) {}
+            }
             this.currentTrack = this.queue.shift();
             await this.play(null, 0);
         } else {
             this.currentTrack = null;
-            const errorMsg = await LanguageManager.getTranslation(this.guild.id, 'musicplayer.error_playlist_stopped');
-            await this.textChannel.send(errorMsg);
+            const msg = userMessage || await LanguageManager.getTranslation(this.guild.id, 'musicplayer.error_playlist_stopped');
+            if (this.textChannel) {
+                try {
+                    await this.textChannel.send(msg);
+                } catch (_) {}
+            }
         }
     }
 
