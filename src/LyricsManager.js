@@ -191,6 +191,26 @@ class LyricsManager {
         );
     }
 
+    isVersionDescriptor(text = '') {
+        return /\b(?:remix|edit|family\s+edit|radio\s+edit|extended|version|ver\.?|live|cover|acoustic|instrumental|karaoke|demo|mix|nightcore|slowed|reverb|sped\s*up|speed\s*up)\b/i.test(text);
+    }
+
+    stripTrailingVersion(text = '') {
+        return this.normalizeWhitespace(
+            String(text).replace(/\s*\((?:[^()]*?(?:remix|edit|family\s+edit|radio\s+edit|extended|version|ver\.?|live|cover|acoustic|instrumental|karaoke|demo|mix|nightcore|slowed|reverb|sped\s*up|speed\s*up)[^()]*)\)\s*$/i, '')
+        );
+    }
+
+    splitArtistCredits(text = '') {
+        const normalized = this.normalizeWhitespace(text);
+        if (!normalized) return [];
+
+        return normalized
+            .split(/\s*(?:,|&| x | × | vs\.? | feat\.? | ft\.? | featuring )\s*/i)
+            .map(part => this.normalizeWhitespace(part))
+            .filter(Boolean);
+    }
+
     extractCoreTitleVariants(title = '', artistHints = []) {
         const variants = [];
         const cleanedTitle = this.normalizeWhitespace(title);
@@ -199,6 +219,7 @@ class LyricsManager {
         this.addCandidate(variants, cleanedTitle);
         this.addCandidate(variants, this.removeEnclosingQuotes(cleanedTitle));
         this.addCandidate(variants, this.stripFeatureSuffix(this.removeEnclosingQuotes(cleanedTitle)));
+        this.addCandidate(variants, this.stripTrailingVersion(this.removeEnclosingQuotes(cleanedTitle)));
 
         const splitBySlash = cleanedTitle.split(/\s+\/\s+/).map(part => this.normalizeWhitespace(part)).filter(Boolean);
         if (splitBySlash.length > 1) {
@@ -224,7 +245,7 @@ class LyricsManager {
             const normalizedContent = this.normalizeWhitespace(content);
             if (!normalizedContent) continue;
 
-            if (/^[A-Za-z0-9\s\-_.&/]+$/.test(normalizedContent)) {
+            if (/^[A-Za-z0-9\s\-_.&/]+$/.test(normalizedContent) && !this.isVersionDescriptor(normalizedContent)) {
                 this.addCandidate(variants, normalizedContent);
 
                 const parentheticalSlashParts = normalizedContent.split(/\s+\/\s+/).map(part => this.normalizeWhitespace(part)).filter(Boolean);
@@ -247,6 +268,14 @@ class LyricsManager {
 
         this.addCandidate(artistCandidates, cleanedArtist);
         this.addCandidate(artistCandidates, split.artistMeta);
+
+        for (const artistPart of this.splitArtistCredits(cleanedArtist)) {
+            this.addCandidate(artistCandidates, artistPart);
+        }
+
+        for (const artistPart of this.splitArtistCredits(split.artistMeta)) {
+            this.addCandidate(artistCandidates, artistPart);
+        }
 
         for (const part of this.extractParentheticalContents(split.artistMeta || rawTitle)) {
             const normalizedPart = this.normalizeForComparison(part);
@@ -280,6 +309,11 @@ class LyricsManager {
     scoreMatchDetails(resultTitle = '', resultArtist = '', titleCandidates = [], artistCandidates = []) {
         const normalizedResultTitle = this.normalizeForComparison(resultTitle);
         const normalizedResultArtist = this.normalizeForComparison(resultArtist);
+        const expectedVersionTags = new Set(
+            titleCandidates
+                .filter(candidate => this.isVersionDescriptor(candidate))
+                .flatMap(candidate => this.tokenizeForComparison(candidate))
+        );
 
         let titleScore = 0;
         for (const candidate of titleCandidates) {
@@ -319,10 +353,22 @@ class LyricsManager {
             }
         }
 
+        let penalty = 0;
+        const resultTitleTokens = this.tokenizeForComparison(resultTitle);
+        const resultHasUnexpectedVersionTag = resultTitleTokens.some(token => {
+            if (!this.isVersionDescriptor(token)) return false;
+            return !expectedVersionTags.has(token);
+        });
+
+        if (resultHasUnexpectedVersionTag) {
+            penalty += 25;
+        }
+
         return {
             titleScore,
             artistScore,
-            total: titleScore + artistScore
+            penalty,
+            total: titleScore + artistScore - penalty
         };
     }
 
