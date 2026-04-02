@@ -688,6 +688,7 @@ class MusicPlayer {
             this.lastPlaybackPosition = resumeFromMs;
             this.pausedTime = 0;
             this.startTime = null; // Will be set when Playing event fires
+            this.currentLyrics = null; // Reset lyrics so button disables until new fetch completes
 
             // Get audio stream - check preloaded first!
             let streamUrl = this.currentTrack.url;
@@ -2049,19 +2050,26 @@ class MusicPlayer {
         try {
             if (!this.currentTrack) return;
 
-            // Fetch lyrics in background (no sync, button-only display)
-            this.currentLyrics = await LyricsManager.fetchLyrics(this.currentTrack);
+            // Check cache synchronously first so the initial embed has correct state
+            const LyricsManager = require('./LyricsManager');
+            const cacheKey = LyricsManager.getCacheKey(this.currentTrack);
+            if (LyricsManager.cache.has(cacheKey)) {
+                this.currentLyrics = LyricsManager.cache.get(cacheKey);
+            } else {
+                this.currentLyrics = null;
+            }
 
-            if (this.currentLyrics && this.currentLyrics.plain) {
-                const sourceLabel = this.currentLyrics.source ? ` via ${this.currentLyrics.source}` : '';
-                // Update now playing embed to enable lyrics button
-                const embedManager = global.clients?.musicEmbedManager;
-                if (embedManager && this.nowPlayingMessage) {
-                    try {
-                        await embedManager.updateNowPlayingEmbed(this);
-                    } catch (error) {
-                        // Ignore update errors
-                    }
+            // Fetch lyrics asynchronously
+            const result = await LyricsManager.fetchLyrics(this.currentTrack);
+            this.currentLyrics = result;
+
+            // Always update the embed so the button reflects actual lyrics state
+            const embedManager = global.clients?.musicEmbedManager;
+            if (embedManager && this.nowPlayingMessage) {
+                try {
+                    await embedManager.updateNowPlayingEmbed(this);
+                } catch (error) {
+                    // Ignore update errors
                 }
             }
         } catch (error) {

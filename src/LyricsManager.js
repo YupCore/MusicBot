@@ -45,16 +45,23 @@ class LyricsManager {
     }
 
     cleanTrackTitle(title = '') {
-        return title
-            .replace(/\(.*?\)/g, '') // Remove parentheses content
-            .replace(/\[.*?\]/g, '') // Remove brackets content
-            .replace(/official video/gi, '')
-            .replace(/official audio/gi, '')
-            .replace(/lyric video/gi, '')
-            .replace(/lyrics/gi, '')
-            .replace(/4k/gi, '')
-            .replace(/hd/gi, '')
+        let cleaned = title
+            // Remove parentheses that contain only non-Latin characters (e.g. Korean/Chinese/Japanese)
+            .replace(/\((?:[^\u0000-\u007F\u0080-\u024F\u1E00-\u1EFF])+?\)/g, '')
+            // For mixed parentheses, strip non-Latin chars and keep the romanized part
+            .replace(/\(([^)]*)\)/g, (_, inner) => {
+                const latin = inner.replace(/[^\u0000-\u007F\u0080-\u024F\u1E00-\u1EFF\s'-]/g, '').trim();
+                return latin ? `(${latin})` : '';
+            })
+            .replace(/\[.*?\]/g, '')
+            .replace(/official\s+(video|audio|mv|music\s*video)/gi, '')
+            .replace(/lyric\s*video/gi, '')
+            .replace(/\blyrics\b/gi, '')
+            .replace(/\b4k\b/gi, '')
+            .replace(/\bhd\b/gi, '')
+            .replace(/\s{2,}/g, ' ')
             .trim();
+        return cleaned;
     }
 
     /**
@@ -160,27 +167,46 @@ class LyricsManager {
         try {
             const artist = track.artist || track.uploader || '';
             const title = this.cleanTrackTitle(track.title || '');
+            const rawTitle = (track.title || '').replace(/\[.*?\]/g, '').replace(/official\s+(video|audio|mv|music\s*video)/gi, '').replace(/lyric\s*video/gi, '').trim();
             
             if (!title) return null;
 
-            const query = artist ? `${artist} ${title}` : title;
-            const searches = await this.geniusClient.songs.search(query);
-            
-            if (!searches || searches.length === 0) return null;
+            // Extract romanized artist from title if main artist is non-Latin
+            const romanizedFromTitle = (track.title || '').match(/\(([^)]*[A-Za-z][^)]*)\)/)?.[1]?.trim();
 
-            const firstSong = searches[0];
-            const lyrics = await firstSong.lyrics();
-            
-            if (!lyrics) return null;
+            const queries = [];
+            // 1. Cleaned title alone (often enough for well-known songs)
+            if (title) queries.push(title);
+            // 2. Cleaned artist + cleaned title
+            if (artist && title) queries.push(`${artist} ${title}`);
+            // 3. Romanized artist from title + cleaned title (critical for non-Latin artists)
+            if (romanizedFromTitle && title) queries.push(`${romanizedFromTitle} ${title}`);
+            // 4. Raw title with artist
+            if (artist && rawTitle && rawTitle !== title) queries.push(`${artist} ${rawTitle}`);
 
-            // Clean Genius lyrics from metadata and HTML tags
-            const cleanedLyrics = this.cleanGeniusLyrics(lyrics);
-            if (!cleanedLyrics) return null;
+            for (const query of queries) {
+                if (!query) continue;
+                try {
+                    const searches = await this.geniusClient.songs.search(query);
+                    if (!searches || searches.length === 0) continue;
 
-            return this.buildLyricsData(track, {
-                plain: cleanedLyrics,
-                source: 'Genius'
-            });
+                    const firstSong = searches[0];
+                    const lyrics = await firstSong.lyrics();
+                    if (!lyrics) continue;
+
+                    const cleanedLyrics = this.cleanGeniusLyrics(lyrics);
+                    if (!cleanedLyrics) continue;
+
+                    return this.buildLyricsData(track, {
+                        plain: cleanedLyrics,
+                        source: 'Genius'
+                    });
+                } catch (error) {
+                    // Try next query
+                }
+            }
+
+            return null;
         } catch (error) {
             console.error('❌ Failed to fetch lyrics from Genius:', error.message);
             return null;
