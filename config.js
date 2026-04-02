@@ -17,8 +17,7 @@ module.exports = {
 
     // Genius API Settings
     genius: {
-        clientId: process.env.GENIUS_CLIENT_ID || '',
-        clientSecret: process.env.GENIUS_CLIENT_SECRET || '',
+        accessToken: process.env.GENIUS_ACCESS_TOKEN || '',
     },
 
     // Bot Settings

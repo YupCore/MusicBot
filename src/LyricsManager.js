@@ -7,9 +7,10 @@ class LyricsManager {
         this.cache = new Map(); // Cache lyrics by track URL
         this.cacheTimers = new Map(); // Track cache expiration timers
         
-        // Initialize Genius client (works without token via web scraping)
-        // Token can be added later for higher rate limits: new Genius.Client(token)
-        this.geniusClient = new Genius.Client();
+        if (config.genius.accessToken !== undefined)
+            this.geniusClient = new Genius.Client(config.genius.accessToken);
+        else
+            this.geniusClient = new Genius.Client(); // works via scraping
     }
 
 
