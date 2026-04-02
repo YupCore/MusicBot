@@ -86,6 +86,12 @@ class LyricsManager {
             .trim();
     }
 
+    tokenizeForComparison(text = '') {
+        return this.normalizeForComparison(text)
+            .split(' ')
+            .filter(word => word && (word.length > 1 || /[^\x00-\x7F]/.test(word)));
+    }
+
     removeEnclosingQuotes(text = '') {
         let value = this.normalizeWhitespace(text);
 
@@ -163,11 +169,19 @@ class LyricsManager {
         if (!value) return;
 
         const trimmed = this.normalizeWhitespace(value);
-        const key = this.normalizeForComparison(trimmed);
-        if (!trimmed || !key) return;
+        const dequoted = this.removeEnclosingQuotes(trimmed);
+        const preferred = dequoted.length && dequoted.length <= trimmed.length ? dequoted : trimmed;
+        const key = this.normalizeForComparison(preferred);
+        if (!preferred || !key) return;
 
-        if (!target.some(existing => this.normalizeForComparison(existing) === key)) {
-            target.push(trimmed);
+        const existingIndex = target.findIndex(existing => this.normalizeForComparison(existing) === key);
+        if (existingIndex === -1) {
+            target.push(preferred);
+            return;
+        }
+
+        if (preferred.length < target[existingIndex].length) {
+            target[existingIndex] = preferred;
         }
     }
 
@@ -235,7 +249,8 @@ class LyricsManager {
         this.addCandidate(artistCandidates, split.artistMeta);
 
         for (const part of this.extractParentheticalContents(split.artistMeta || rawTitle)) {
-            if (/[A-Za-z]/.test(part)) {
+            const normalizedPart = this.normalizeForComparison(part);
+            if (/[A-Za-z]/.test(part) && normalizedPart.replace(/\s+/g, '').length >= 2) {
                 this.addCandidate(artistCandidates, part);
             }
         }
@@ -262,7 +277,7 @@ class LyricsManager {
         };
     }
 
-    scoreMatch(resultTitle = '', resultArtist = '', titleCandidates = [], artistCandidates = []) {
+    scoreMatchDetails(resultTitle = '', resultArtist = '', titleCandidates = [], artistCandidates = []) {
         const normalizedResultTitle = this.normalizeForComparison(resultTitle);
         const normalizedResultArtist = this.normalizeForComparison(resultArtist);
 
@@ -276,8 +291,8 @@ class LyricsManager {
             } else if (normalizedResultTitle.includes(normalizedCandidate) || normalizedCandidate.includes(normalizedResultTitle)) {
                 titleScore = Math.max(titleScore, 90);
             } else {
-                const candidateWords = normalizedCandidate.split(' ').filter(Boolean);
-                const resultWords = normalizedResultTitle.split(' ').filter(Boolean);
+                const candidateWords = this.tokenizeForComparison(normalizedCandidate);
+                const resultWords = this.tokenizeForComparison(normalizedResultTitle);
                 const overlap = candidateWords.filter(word => resultWords.includes(word)).length;
                 if (overlap > 0) {
                     titleScore = Math.max(titleScore, Math.min(80, overlap * 20));
@@ -295,8 +310,8 @@ class LyricsManager {
             } else if (normalizedResultArtist.includes(normalizedCandidate) || normalizedCandidate.includes(normalizedResultArtist)) {
                 artistScore = Math.max(artistScore, 28);
             } else {
-                const candidateWords = normalizedCandidate.split(' ').filter(Boolean);
-                const resultWords = normalizedResultArtist.split(' ').filter(Boolean);
+                const candidateWords = this.tokenizeForComparison(normalizedCandidate);
+                const resultWords = this.tokenizeForComparison(normalizedResultArtist);
                 const overlap = candidateWords.filter(word => resultWords.includes(word)).length;
                 if (overlap > 0) {
                     artistScore = Math.max(artistScore, Math.min(24, overlap * 8));
@@ -304,7 +319,11 @@ class LyricsManager {
             }
         }
 
-        return titleScore + artistScore;
+        return {
+            titleScore,
+            artistScore,
+            total: titleScore + artistScore
+        };
     }
 
     buildLyricsData(track, data = {}) {
@@ -414,18 +433,22 @@ class LyricsManager {
                     let bestScore = -1;
 
                     for (const result of results.slice(0, 5)) {
-                        const score = this.scoreMatch(
+                        const scoreDetails = this.scoreMatchDetails(
                             result.trackName,
                             result.artistName,
                             metadata.titleCandidates,
                             metadata.artistCandidates
                         );
 
-                        console.log(`[Lyrics/LRCLIB] Candidate: "${result.trackName}" by "${result.artistName}" score=${score} hasPlainLyrics=${!!result.plainLyrics}`);
+                        console.log(`[Lyrics/LRCLIB] Candidate: "${result.trackName}" by "${result.artistName}" score=${scoreDetails.total} (title=${scoreDetails.titleScore}, artist=${scoreDetails.artistScore}) hasPlainLyrics=${!!result.plainLyrics}`);
 
-                        if (result.plainLyrics && score > bestScore) {
+                        if (metadata.artistCandidates.length > 0 && scoreDetails.artistScore === 0 && dedupedAttempts[i].artist_name) {
+                            continue;
+                        }
+
+                        if (result.plainLyrics && scoreDetails.total > bestScore) {
                             bestResult = result;
-                            bestScore = score;
+                            bestScore = scoreDetails.total;
                         }
                     }
 
@@ -471,18 +494,19 @@ class LyricsManager {
 
             const queries = [];
             for (const titleCandidate of metadata.titleCandidates) {
-                this.addCandidate(queries, titleCandidate);
-
                 for (const artistCandidate of metadata.artistCandidates) {
                     this.addCandidate(queries, `${artistCandidate} ${titleCandidate}`);
                 }
+
+                this.addCandidate(queries, titleCandidate);
             }
 
             for (const romanizedTitle of metadata.romanizedTitleCandidates) {
-                this.addCandidate(queries, romanizedTitle);
                 for (const artistCandidate of metadata.artistCandidates) {
                     this.addCandidate(queries, `${artistCandidate} ${romanizedTitle}`);
                 }
+
+                this.addCandidate(queries, romanizedTitle);
             }
 
             if (metadata.rawTitle) {
@@ -514,17 +538,30 @@ class LyricsManager {
                         const songKey = String(song.id || `${song.title}-${song.artist?.name || ''}`);
                         if (triedSongs.has(songKey)) continue;
 
-                        const score = this.scoreMatch(
+                        const scoreDetails = this.scoreMatchDetails(
                             song.title,
                             song.artist?.name || '',
                             metadata.titleCandidates,
                             metadata.artistCandidates
                         );
 
-                        console.log(`[Lyrics/Genius] Query ${i + 1}: candidate "${song.title}" by "${song.artist?.name || 'unknown'}" score=${score}`);
+                        console.log(`[Lyrics/Genius] Query ${i + 1}: candidate "${song.title}" by "${song.artist?.name || 'unknown'}" score=${scoreDetails.total} (title=${scoreDetails.titleScore}, artist=${scoreDetails.artistScore})`);
 
-                        if (score > bestScore) {
-                            bestScore = score;
+                        const queryHasExplicitArtist = metadata.artistCandidates.some(candidate => {
+                            const normalizedCandidate = this.normalizeForComparison(candidate);
+                            return normalizedCandidate && this.normalizeForComparison(query).includes(normalizedCandidate);
+                        });
+
+                        if (metadata.artistCandidates.length > 0 && scoreDetails.artistScore === 0 && queryHasExplicitArtist) {
+                            continue;
+                        }
+
+                        if (metadata.artistCandidates.length > 0 && scoreDetails.artistScore === 0 && !queryHasExplicitArtist && scoreDetails.total < 130) {
+                            continue;
+                        }
+
+                        if (scoreDetails.total > bestScore) {
+                            bestScore = scoreDetails.total;
                             bestSong = song;
                         }
                     }
