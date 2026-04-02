@@ -4,22 +4,23 @@ const config = require('../config');
 
 class LyricsManager {
     constructor() {
-        this.cache = new Map(); // Cache lyrics by track URL
-        this.cacheTimers = new Map(); // Track cache expiration timers
-        
-        if (config.genius.accessToken !== undefined)
+        this.cache = new Map();
+        this.cacheTimers = new Map();
+
+        if (config.genius?.accessToken)
             this.geniusClient = new Genius.Client(config.genius.accessToken);
         else
-            this.geniusClient = new Genius.Client(); // works via scraping
+            this.geniusClient = new Genius.Client();
     }
-
-
 
     getCacheKey(track) {
         if (!track) return 'unknown';
-        const title = (track.title || '').toLowerCase();
-        const artist = (track.artist || track.uploader || '').toLowerCase();
-        return `${title}-${artist}` || title || 'unknown';
+
+        const title = (track.title || '').trim().toLowerCase();
+        const artist = (track.artist || track.uploader || '').trim().toLowerCase();
+        const combined = [title, artist].filter(Boolean).join('-');
+
+        return combined || 'unknown';
     }
 
     storeInCache(cacheKey, data, ttlMs = null) {
@@ -45,29 +46,267 @@ class LyricsManager {
         this.cacheTimers.set(cacheKey, timer);
     }
 
-    cleanTrackTitle(title = '') {
-        let cleaned = title
-            // Remove parentheses that contain only non-Latin characters (e.g. Korean/Chinese/Japanese)
-            .replace(/\((?:[^\u0000-\u007F\u0080-\u024F\u1E00-\u1EFF])+?\)/g, '')
-            // For mixed parentheses, strip non-Latin chars and keep the romanized part
-            .replace(/\(([^)]*)\)/g, (_, inner) => {
-                const latin = inner.replace(/[^\u0000-\u007F\u0080-\u024F\u1E00-\u1EFF\s'-]/g, '').trim();
-                return latin ? `(${latin})` : '';
-            })
-            .replace(/\[.*?\]/g, '')
-            .replace(/official\s+(video|audio|mv|music\s*video)/gi, '')
-            .replace(/lyric\s*video/gi, '')
-            .replace(/\blyrics\b/gi, '')
-            .replace(/\b4k\b/gi, '')
-            .replace(/\bhd\b/gi, '')
+    normalizeWhitespace(text = '') {
+        return String(text)
+            .replace(/[\u2010-\u2015]/g, '-')
+            .replace(/[\u00A0\t\r\n]+/g, ' ')
             .replace(/\s{2,}/g, ' ')
             .trim();
-        return cleaned;
     }
 
-    /**
-     * Build simple lyrics data object (no sync support)
-     */
+    stripCommonNoise(text = '') {
+        return this.normalizeWhitespace(
+            String(text)
+                .replace(/\[[^\]]*\]/g, ' ')
+                .replace(/\b(?:official\s+)?(?:music\s+)?video\b/gi, ' ')
+                .replace(/\bofficial\s+audio\b/gi, ' ')
+                .replace(/\bofficial\s+mv\b/gi, ' ')
+                .replace(/\blyric\s*video\b/gi, ' ')
+                .replace(/\baudio\b/gi, ' ')
+                .replace(/\blyrics\b/gi, ' ')
+                .replace(/\bvisualizer\b/gi, ' ')
+                .replace(/\b4k\b/gi, ' ')
+                .replace(/\bhd\b/gi, ' ')
+                .replace(/\s*\|\s*[^|]+$/g, ' ')
+        );
+    }
+
+    cleanTrackTitle(title = '') {
+        return this.stripCommonNoise(title);
+    }
+
+    normalizeForComparison(text = '') {
+        return this.normalizeWhitespace(String(text))
+            .normalize('NFKC')
+            .toLowerCase()
+            .replace(/["'`‘’“”]/g, '')
+            .replace(/[()\[\]{}]/g, ' ')
+            .replace(/[^\p{L}\p{N}]+/gu, ' ')
+            .replace(/\s{2,}/g, ' ')
+            .trim();
+    }
+
+    removeEnclosingQuotes(text = '') {
+        let value = this.normalizeWhitespace(text);
+
+        while (
+            (value.startsWith('"') && value.endsWith('"')) ||
+            (value.startsWith("'") && value.endsWith("'")) ||
+            (value.startsWith('“') && value.endsWith('”')) ||
+            (value.startsWith('‘') && value.endsWith('’'))
+        ) {
+            value = value.slice(1, -1).trim();
+        }
+
+        return value;
+    }
+
+    extractParentheticalContents(text = '') {
+        const contents = [];
+        const stack = [];
+
+        for (const char of String(text)) {
+            if (char === '(') {
+                stack.push('');
+                continue;
+            }
+
+            if (char === ')') {
+                if (stack.length === 0) continue;
+
+                const completed = stack.pop().trim();
+                if (completed) contents.push(completed);
+
+                if (stack.length > 0) {
+                    stack[stack.length - 1] += `(${completed})`;
+                }
+                continue;
+            }
+
+            if (stack.length > 0) {
+                stack[stack.length - 1] += char;
+            }
+        }
+
+        return contents;
+    }
+
+    cleanArtistName(artist = '') {
+        return this.normalizeWhitespace(
+            String(artist)
+                .replace(/\b(?:official|topic)\b/gi, ' ')
+                .replace(/\s*-\s*topic$/i, ' ')
+        );
+    }
+
+    splitArtistAndTitle(rawTitle = '') {
+        const normalized = this.normalizeWhitespace(rawTitle);
+        const separators = [' - ', ' – ', ' — ', ' —', ' –'];
+
+        for (const separator of separators) {
+            const index = normalized.indexOf(separator);
+            if (index > 0 && index < normalized.length - separator.length) {
+                return {
+                    artistMeta: normalized.slice(0, index).trim(),
+                    songTitle: normalized.slice(index + separator.length).trim()
+                };
+            }
+        }
+
+        return {
+            artistMeta: '',
+            songTitle: normalized
+        };
+    }
+
+    addCandidate(target, value) {
+        if (!value) return;
+
+        const trimmed = this.normalizeWhitespace(value);
+        const key = this.normalizeForComparison(trimmed);
+        if (!trimmed || !key) return;
+
+        if (!target.some(existing => this.normalizeForComparison(existing) === key)) {
+            target.push(trimmed);
+        }
+    }
+
+    stripFeatureSuffix(text = '') {
+        return this.normalizeWhitespace(
+            String(text).replace(/\s+(?:feat\.?|ft\.?|featuring|prod\.?|produced\s+by)\b.*$/i, '')
+        );
+    }
+
+    extractCoreTitleVariants(title = '', artistHints = []) {
+        const variants = [];
+        const cleanedTitle = this.normalizeWhitespace(title);
+        if (!cleanedTitle) return variants;
+
+        this.addCandidate(variants, cleanedTitle);
+        this.addCandidate(variants, this.removeEnclosingQuotes(cleanedTitle));
+        this.addCandidate(variants, this.stripFeatureSuffix(this.removeEnclosingQuotes(cleanedTitle)));
+
+        const splitBySlash = cleanedTitle.split(/\s+\/\s+/).map(part => this.normalizeWhitespace(part)).filter(Boolean);
+        if (splitBySlash.length > 1) {
+            const firstSegment = splitBySlash[0];
+            const restCombined = splitBySlash.slice(1).join(' / ');
+            const normalizedRest = this.normalizeForComparison(restCombined);
+            const looksLikeMetadata =
+                /\b(?:feat|ft|featuring|prod|produced|ost|op|ed|ver|version|remix|cover|self\s*cover|topic)\b/i.test(restCombined) ||
+                artistHints.some(hint => {
+                    const normalizedHint = this.normalizeForComparison(hint);
+                    return normalizedHint && normalizedRest.includes(normalizedHint);
+                });
+
+            this.addCandidate(variants, firstSegment);
+
+            if (looksLikeMetadata) {
+                this.addCandidate(variants, this.stripFeatureSuffix(firstSegment));
+            }
+        }
+
+        const parentheticalContents = this.extractParentheticalContents(cleanedTitle);
+        for (const content of parentheticalContents) {
+            const normalizedContent = this.normalizeWhitespace(content);
+            if (!normalizedContent) continue;
+
+            if (/^[A-Za-z0-9\s\-_.&/]+$/.test(normalizedContent)) {
+                this.addCandidate(variants, normalizedContent);
+
+                const parentheticalSlashParts = normalizedContent.split(/\s+\/\s+/).map(part => this.normalizeWhitespace(part)).filter(Boolean);
+                if (parentheticalSlashParts.length > 1) {
+                    this.addCandidate(variants, parentheticalSlashParts[0]);
+                }
+            }
+        }
+
+        return variants;
+    }
+
+    buildSearchMetadata(track) {
+        const rawTitle = this.stripCommonNoise(track?.title || '');
+        const cleanedArtist = this.cleanArtistName(track?.artist || track?.uploader || '');
+        const split = this.splitArtistAndTitle(rawTitle);
+
+        const artistCandidates = [];
+        const titleCandidates = [];
+
+        this.addCandidate(artistCandidates, cleanedArtist);
+        this.addCandidate(artistCandidates, split.artistMeta);
+
+        for (const part of this.extractParentheticalContents(split.artistMeta || rawTitle)) {
+            if (/[A-Za-z]/.test(part)) {
+                this.addCandidate(artistCandidates, part);
+            }
+        }
+
+        const primaryTitle = split.songTitle || rawTitle;
+        for (const variant of this.extractCoreTitleVariants(primaryTitle, artistCandidates)) {
+            this.addCandidate(titleCandidates, variant);
+        }
+
+        if (!titleCandidates.length && rawTitle) {
+            this.addCandidate(titleCandidates, rawTitle);
+        }
+
+        const romanizedTitleCandidates = titleCandidates.filter(candidate => /[A-Za-z]/.test(candidate));
+
+        return {
+            rawTitle,
+            rawArtist: cleanedArtist,
+            split,
+            primaryTitle: titleCandidates[0] || rawTitle,
+            titleCandidates,
+            artistCandidates,
+            romanizedTitleCandidates
+        };
+    }
+
+    scoreMatch(resultTitle = '', resultArtist = '', titleCandidates = [], artistCandidates = []) {
+        const normalizedResultTitle = this.normalizeForComparison(resultTitle);
+        const normalizedResultArtist = this.normalizeForComparison(resultArtist);
+
+        let titleScore = 0;
+        for (const candidate of titleCandidates) {
+            const normalizedCandidate = this.normalizeForComparison(candidate);
+            if (!normalizedCandidate) continue;
+
+            if (normalizedCandidate === normalizedResultTitle) {
+                titleScore = Math.max(titleScore, 120);
+            } else if (normalizedResultTitle.includes(normalizedCandidate) || normalizedCandidate.includes(normalizedResultTitle)) {
+                titleScore = Math.max(titleScore, 90);
+            } else {
+                const candidateWords = normalizedCandidate.split(' ').filter(Boolean);
+                const resultWords = normalizedResultTitle.split(' ').filter(Boolean);
+                const overlap = candidateWords.filter(word => resultWords.includes(word)).length;
+                if (overlap > 0) {
+                    titleScore = Math.max(titleScore, Math.min(80, overlap * 20));
+                }
+            }
+        }
+
+        let artistScore = 0;
+        for (const candidate of artistCandidates) {
+            const normalizedCandidate = this.normalizeForComparison(candidate);
+            if (!normalizedCandidate) continue;
+
+            if (normalizedCandidate === normalizedResultArtist) {
+                artistScore = Math.max(artistScore, 40);
+            } else if (normalizedResultArtist.includes(normalizedCandidate) || normalizedCandidate.includes(normalizedResultArtist)) {
+                artistScore = Math.max(artistScore, 28);
+            } else {
+                const candidateWords = normalizedCandidate.split(' ').filter(Boolean);
+                const resultWords = normalizedResultArtist.split(' ').filter(Boolean);
+                const overlap = candidateWords.filter(word => resultWords.includes(word)).length;
+                if (overlap > 0) {
+                    artistScore = Math.max(artistScore, Math.min(24, overlap * 8));
+                }
+            }
+        }
+
+        return titleScore + artistScore;
+    }
+
     buildLyricsData(track, data = {}) {
         return {
             plain: data.plain ?? null,
@@ -78,11 +317,6 @@ class LyricsManager {
         };
     }
 
-    /**
-     * Fetch lyrics - first from Genius, fallback to LRCLIB
-     * @param {Object} track - Track object with title and artist
-     * @returns {Promise<Object|null>} Lyrics object or null
-     */
     async fetchLyrics(track) {
         if (!track || !track.title) {
             console.log('[Lyrics] ❌ No track or track.title provided');
@@ -97,7 +331,6 @@ class LyricsManager {
             return this.cache.get(cacheKey);
         }
 
-        // Try Genius first
         console.log('[Lyrics] Trying Genius...');
         const geniusResult = await this.fetchFromGenius(track);
         if (geniusResult && geniusResult.plain) {
@@ -107,7 +340,6 @@ class LyricsManager {
         }
         console.log('[Lyrics] ⚠️ Genius returned no results');
 
-        // Fallback to LRCLIB
         console.log('[Lyrics] Trying LRCLIB...');
         const lrclibResult = await this.fetchFromLrclib(track);
         if (lrclibResult && lrclibResult.plain) {
@@ -117,62 +349,98 @@ class LyricsManager {
         }
         console.log('[Lyrics] ⚠️ LRCLIB returned no results');
 
-        // Cache null result to avoid repeated lookups
         console.log('[Lyrics] ❌ No lyrics found from any source');
         this.storeInCache(cacheKey, null);
         return null;
     }
 
-
-
-
-
     async fetchFromLrclib(track) {
         try {
-            const artist = track.artist || track.uploader || '';
+            const metadata = this.buildSearchMetadata(track);
             const searchUrl = 'https://lrclib.net/api/search';
-            const cleanTitle = this.cleanTrackTitle(track.title || '');
-            console.log(`[Lyrics/LRCLIB] Cleaned title: "${track.title}" -> "${cleanTitle}"`);
+
+            console.log(`[Lyrics/LRCLIB] Parsed metadata: ${JSON.stringify({
+                titleCandidates: metadata.titleCandidates,
+                artistCandidates: metadata.artistCandidates
+            })}`);
 
             const attempts = [];
-            attempts.push({ track_name: cleanTitle, artist_name: artist });
-            if (artist) {
-                attempts.push({ track_name: cleanTitle });
-            }
-            if (cleanTitle && cleanTitle !== track.title) {
-                attempts.push({ track_name: track.title, artist_name: artist });
-            }
-            console.log(`[Lyrics/LRCLIB] Will try ${attempts.length} search variations`);
+            for (const titleCandidate of metadata.titleCandidates) {
+                if (!titleCandidate) continue;
 
-            for (let i = 0; i < attempts.length; i++) {
-                const params = attempts[i];
+                for (const artistCandidate of metadata.artistCandidates) {
+                    if (!artistCandidate) continue;
+                    attempts.push({ track_name: titleCandidate, artist_name: artistCandidate });
+                }
+
+                attempts.push({ track_name: titleCandidate });
+            }
+
+            if (metadata.rawTitle && !attempts.some(attempt => this.normalizeForComparison(attempt.track_name) === this.normalizeForComparison(metadata.rawTitle))) {
+                attempts.push({ track_name: metadata.rawTitle, artist_name: metadata.rawArtist || undefined });
+            }
+
+            const dedupedAttempts = [];
+            const seen = new Set();
+            for (const attempt of attempts) {
+                const key = JSON.stringify({
+                    track_name: this.normalizeForComparison(attempt.track_name),
+                    artist_name: this.normalizeForComparison(attempt.artist_name || '')
+                });
+
+                if (seen.has(key)) continue;
+                seen.add(key);
+                dedupedAttempts.push(attempt);
+            }
+
+            console.log(`[Lyrics/LRCLIB] Will try ${dedupedAttempts.length} search variations`);
+
+            for (let i = 0; i < dedupedAttempts.length; i++) {
+                const params = dedupedAttempts[i];
                 if (!params.track_name) continue;
 
                 try {
-                    console.log(`[Lyrics/LRCLIB] Attempt ${i + 1}: searching with params:`, JSON.stringify(params));
+                    console.log(`[Lyrics/LRCLIB] Attempt ${i + 1}: searching with params: ${JSON.stringify(params)}`);
                     const response = await axios.get(searchUrl, {
                         params,
                         timeout: 5000
                     });
 
-                    console.log(`[Lyrics/LRCLIB] Response: ${response.data?.length || 0} results`);
-                    if (response.data && response.data.length > 0) {
-                        const result = response.data[0];
-                        console.log(`[Lyrics/LRCLIB] First result: "${result.trackName}" by "${result.artistName}" (hasPlainLyrics: ${!!result.plainLyrics})`);
-                        // Only use plain lyrics from LRCLIB
-                        if (!result.plainLyrics) {
-                            console.log('[Lyrics/LRCLIB] ⚠️ First result has no plainLyrics, trying next attempt');
-                            continue;
+                    const results = Array.isArray(response.data) ? response.data : [];
+                    console.log(`[Lyrics/LRCLIB] Attempt ${i + 1}: ${results.length} results`);
+                    if (!results.length) continue;
+
+                    let bestResult = null;
+                    let bestScore = -1;
+
+                    for (const result of results.slice(0, 5)) {
+                        const score = this.scoreMatch(
+                            result.trackName,
+                            result.artistName,
+                            metadata.titleCandidates,
+                            metadata.artistCandidates
+                        );
+
+                        console.log(`[Lyrics/LRCLIB] Candidate: "${result.trackName}" by "${result.artistName}" score=${score} hasPlainLyrics=${!!result.plainLyrics}`);
+
+                        if (result.plainLyrics && score > bestScore) {
+                            bestResult = result;
+                            bestScore = score;
                         }
-                        
-                        return this.buildLyricsData(track, {
-                            plain: result.plainLyrics,
-                            source: 'LRCLIB'
-                        });
                     }
+
+                    if (!bestResult) continue;
+
+                    return this.buildLyricsData(track, {
+                        plain: bestResult.plainLyrics,
+                        source: 'LRCLIB',
+                        artist: bestResult.artistName || track?.artist || track?.uploader || null,
+                        title: bestResult.trackName || track?.title || null,
+                        album: bestResult.albumName || null
+                    });
                 } catch (error) {
                     console.error(`[Lyrics/LRCLIB] Attempt ${i + 1} failed:`, error.message, error.response?.status ? `(HTTP ${error.response.status})` : '');
-                    if (i === attempts.length - 1) {
+                    if (i === dedupedAttempts.length - 1) {
                         console.error('❌ Failed to fetch lyrics from LRCLIB:', error.message);
                     }
                 }
@@ -188,45 +456,86 @@ class LyricsManager {
 
     async fetchFromGenius(track) {
         try {
-            const artist = track.artist || track.uploader || '';
-            const title = this.cleanTrackTitle(track.title || '');
-            const rawTitle = (track.title || '').replace(/\[.*?\]/g, '').replace(/official\s+(video|audio|mv|music\s*video)/gi, '').replace(/lyric\s*video/gi, '').trim();
-            console.log(`[Lyrics/Genius] Cleaned title: "${track.title}" -> "${title}", rawTitle: "${rawTitle}"`);
-            
-            if (!title) {
-                console.log('[Lyrics/Genius] ❌ Title is empty after cleaning');
+            const metadata = this.buildSearchMetadata(track);
+            console.log(`[Lyrics/Genius] Parsed metadata: ${JSON.stringify({
+                rawTitle: metadata.rawTitle,
+                primaryTitle: metadata.primaryTitle,
+                titleCandidates: metadata.titleCandidates,
+                artistCandidates: metadata.artistCandidates
+            })}`);
+
+            if (!metadata.titleCandidates.length) {
+                console.log('[Lyrics/Genius] ❌ Title is empty after normalization');
                 return null;
             }
 
-            // Extract romanized artist from title if main artist is non-Latin
-            const romanizedFromTitle = (track.title || '').match(/\(([^)]*[A-Za-z][^)]*)\)/)?.[1]?.trim();
-            if (romanizedFromTitle) {
-                console.log(`[Lyrics/Genius] Extracted romanized from title: "${romanizedFromTitle}"`);
+            const queries = [];
+            for (const titleCandidate of metadata.titleCandidates) {
+                this.addCandidate(queries, titleCandidate);
+
+                for (const artistCandidate of metadata.artistCandidates) {
+                    this.addCandidate(queries, `${artistCandidate} ${titleCandidate}`);
+                }
             }
 
-            const queries = [];
-            // 1. Cleaned title alone (often enough for well-known songs)
-            if (title) queries.push(title);
-            // 2. Cleaned artist + cleaned title
-            if (artist && title) queries.push(`${artist} ${title}`);
-            // 3. Romanized artist from title + cleaned title (critical for non-Latin artists)
-            if (romanizedFromTitle && title) queries.push(`${romanizedFromTitle} ${title}`);
-            // 4. Raw title with artist
-            if (artist && rawTitle && rawTitle !== title) queries.push(`${artist} ${rawTitle}`);
-            console.log(`[Lyrics/Genius] Will try ${queries.length} search queries:`, queries.map(q => `"${q}"`).join(', '));
+            for (const romanizedTitle of metadata.romanizedTitleCandidates) {
+                this.addCandidate(queries, romanizedTitle);
+                for (const artistCandidate of metadata.artistCandidates) {
+                    this.addCandidate(queries, `${artistCandidate} ${romanizedTitle}`);
+                }
+            }
+
+            if (metadata.rawTitle) {
+                this.addCandidate(queries, metadata.rawTitle);
+                if (metadata.rawArtist) {
+                    this.addCandidate(queries, `${metadata.rawArtist} ${metadata.rawTitle}`);
+                }
+            }
+
+            console.log(`[Lyrics/Genius] Will try ${queries.length} search queries: ${queries.map(q => `"${q}"`).join(', ')}`);
+
+            const triedSongs = new Set();
 
             for (let i = 0; i < queries.length; i++) {
                 const query = queries[i];
                 if (!query) continue;
+
                 try {
                     console.log(`[Lyrics/Genius] Query ${i + 1}: searching "${query}"`);
                     const searches = await this.geniusClient.songs.search(query);
-                    console.log(`[Lyrics/Genius] Query ${i + 1}: ${searches?.length || 0} results`);
-                    if (!searches || searches.length === 0) continue;
+                    const results = Array.isArray(searches) ? searches : [];
+                    console.log(`[Lyrics/Genius] Query ${i + 1}: ${results.length} results`);
+                    if (!results.length) continue;
 
-                    const firstSong = searches[0];
-                    console.log(`[Lyrics/Genius] Query ${i + 1}: top result: "${firstSong.title}" by "${firstSong.artist?.name || 'unknown'}"`);
-                    const lyrics = await firstSong.lyrics();
+                    let bestSong = null;
+                    let bestScore = -1;
+
+                    for (const song of results.slice(0, 5)) {
+                        const songKey = String(song.id || `${song.title}-${song.artist?.name || ''}`);
+                        if (triedSongs.has(songKey)) continue;
+
+                        const score = this.scoreMatch(
+                            song.title,
+                            song.artist?.name || '',
+                            metadata.titleCandidates,
+                            metadata.artistCandidates
+                        );
+
+                        console.log(`[Lyrics/Genius] Query ${i + 1}: candidate "${song.title}" by "${song.artist?.name || 'unknown'}" score=${score}`);
+
+                        if (score > bestScore) {
+                            bestScore = score;
+                            bestSong = song;
+                        }
+                    }
+
+                    if (!bestSong) continue;
+
+                    const songKey = String(bestSong.id || `${bestSong.title}-${bestSong.artist?.name || ''}`);
+                    triedSongs.add(songKey);
+
+                    console.log(`[Lyrics/Genius] Query ${i + 1}: selected "${bestSong.title}" by "${bestSong.artist?.name || 'unknown'}" score=${bestScore}`);
+                    const lyrics = await bestSong.lyrics();
                     console.log(`[Lyrics/Genius] Query ${i + 1}: lyrics fetched, length: ${lyrics?.length || 0}`);
                     if (!lyrics) continue;
 
@@ -236,7 +545,9 @@ class LyricsManager {
 
                     return this.buildLyricsData(track, {
                         plain: cleanedLyrics,
-                        source: 'Genius'
+                        source: 'Genius',
+                        artist: bestSong.artist?.name || track?.artist || track?.uploader || null,
+                        title: bestSong.title || track?.title || null
                     });
                 } catch (error) {
                     console.error(`[Lyrics/Genius] Query ${i + 1} failed:`, error.message);
@@ -256,35 +567,16 @@ class LyricsManager {
 
         let cleaned = lyrics;
 
-        // Step 1: Remove contributor/translation header (everything before actual lyrics start)
-        // Match: "131 Contributors...Lyrics" or "131 Contributors...Lyrics<img...>"
-        cleaned = cleaned.replace(/^\d+\s+Contributors.*?Lyrics(<[^>]+>)*\s*/is, '');
-        
-        // Step 2: Remove HTML tags
+        cleaned = cleaned.replace(/^\d+\s+Contributors?.*?Lyrics(<[^>]+>)*\s*/is, '');
         cleaned = cleaned.replace(/<[^>]*>/g, '');
-        
-        // Step 3: Remove description paragraphs (usually before [Verse] tags)
-        // Match lines that end with "..." and "Read More"
         cleaned = cleaned.replace(/^[^\[]+?\.{3}\s*Read More\s*/im, '');
-        
-        // Step 4: Remove bracketed descriptions with quotes (like ["Susamam" ft. ...])
-        cleaned = cleaned.replace(/\[[""][^\]]{50,}\]/g, '');
-        
-        // Step 5: Clean up whitespace
+        cleaned = cleaned.replace(/\["[^"]{50,}"\]/g, '');
         cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
         cleaned = cleaned.trim();
 
         return cleaned || null;
     }
 
-
-
-    /**
-     * Format full lyrics for display (with pagination support)
-     * @param {Object} lyricsData - Lyrics data
-     * @param {number} maxLength - Max character length per page
-     * @returns {Array<string>} Array of lyric pages
-     */
     formatFullLyrics(lyricsData, maxLength = 4000) {
         if (!lyricsData) return [];
 
@@ -303,15 +595,12 @@ class LyricsManager {
                 currentPage += line + '\n';
             }
         }
-        
+
         if (currentPage) pages.push(currentPage.trim());
 
         return pages;
     }
 
-    /**
-     * Clear cache
-     */
     clearCache() {
         this.cache.clear();
         for (const timer of this.cacheTimers.values()) {
