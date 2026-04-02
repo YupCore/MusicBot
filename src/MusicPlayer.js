@@ -550,7 +550,7 @@ class MusicPlayer {
      * await a single download instead of racing or polling.
      * Works with YouTube, Spotify, SoundCloud, and DirectLink.
      */
-    async downloadTrack(track, streamUrl, streamInfo) {
+    async downloadTrack(track) {
         // Generate unique filename based on URL to enable caching
         const hash = crypto.createHash('md5')
             .update(track.url)
@@ -1713,17 +1713,8 @@ class MusicPlayer {
             }
 
             if (streamInfo) {
-                // Download track in background
-                let streamUrl_final;
-                if (typeof streamInfo === 'string') {
-                    streamUrl_final = streamInfo;
-                } else if (streamInfo && typeof streamInfo === 'object') {
-                    streamUrl_final = streamInfo.stream || streamInfo.url;
-                } else {
-                    streamUrl_final = streamInfo;
-                }
 
-                await this.downloadTrack(track, streamUrl_final, streamInfo);
+                await this.downloadTrack(track);
                 
                 // Mark as preloaded
                 this.preloadedStreams.set(track.url, {
