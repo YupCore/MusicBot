@@ -29,7 +29,7 @@ class DirectLink {
             const estimatedDuration = this.estimateDuration(contentLength, contentType);
 
             const track = {
-                title: this.extractTitle(filename, guildId),
+                title: await this.extractTitle(filename, guildId),
                 artist: await LanguageManager.getTranslation(guildId, 'directlink.artist'),
                 url: url,
                 duration: estimatedDuration,
@@ -43,10 +43,10 @@ class DirectLink {
                 filename: filename,
             };
 
-            return track;
+            return [track];
 
         } catch (error) {
-            return null;
+            return [];
         }
     }
 

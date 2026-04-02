@@ -891,7 +891,7 @@ class MusicPlayer {
                 const trackToDownload = this.currentTrack;
                 
                 // Download in background
-                this.downloadTrack(trackToDownload, streamUrl_final, streamInfo)
+                this.downloadTrack(trackToDownload, streamUrl, streamInfo)
                     .then(file => {
                         // Only update if we're still on the same track
                         if (this.currentTrack && this.currentTrack.url === trackToDownload.url) {

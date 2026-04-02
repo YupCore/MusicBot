@@ -201,7 +201,7 @@ module.exports = {
             return 'spotify';
         } else if (query.includes('soundcloud.com')) {
             return 'soundcloud';
-        } else if (query.startsWith('http') && (query.includes('.mp3') || query.includes('.wav') || query.includes('.ogg'))) {
+        } else if (query.match(/^https?:\/\/.*\.(mp3|wav|ogg|flac|m4a|aac|wma|opus|webm|mp4)$/i)) {
             return 'direct';
         } else {
             return 'youtube'; // Default to YouTube search
