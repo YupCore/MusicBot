@@ -159,7 +159,7 @@ class YouTube {
             // Get stream URL with simple format
             const info = await YtDlp.runJson(url, this.getYtDlpOptions({
                 dumpSingleJson: true,
-                format: 'bestaudio/best',
+                format: 'bestaudio[ext=webm]/bestaudio[ext=opus]/bestaudio',
             }));
 
             if (!info || !info.url) {

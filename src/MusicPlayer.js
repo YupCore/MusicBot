@@ -612,7 +612,7 @@ class MusicPlayer {
 
         await YtDlp.download(downloadUrl, {
             output: filepath,
-            format: 'bestaudio',
+            format: 'bestaudio[ext=webm]/bestaudio[ext=opus]/bestaudio',
             noCheckCertificates: true,
             noWarnings: true,
             preferFreeFormats: true,
@@ -620,9 +620,6 @@ class MusicPlayer {
                 'referer:youtube.com',
                 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             ],
-            postprocessorArgs: {
-                'ffmpeg': ['-c:a', 'libopus', '-b:a', '128k']
-            },
             extractAudio: true,
             audioFormat: 'opus'
         });
@@ -1057,7 +1054,7 @@ class MusicPlayer {
             const playbackMs = this.resource?.playbackDuration || 0;
             const durationMs = (Number(this.currentTrack.duration) || 0) * 1000;
 
-            if (durationMs > 0 && playbackMs + 1500 < durationMs) {
+            if (durationMs > 0 && playbackMs + 5000 < durationMs) {
                 const remainingMs = Math.max(durationMs - playbackMs, 2000);
                 this.trackTimer = setTimeout(() => this.ensureTrackCompletion(), remainingMs);
                 return;
@@ -1405,7 +1402,7 @@ class MusicPlayer {
             this.lastPlaybackPosition = totalPlaybackMs;
             const durationMs = finishedTrack && Number(finishedTrack.duration) > 0 ? Number(finishedTrack.duration) * 1000 : 0;
             const manualSkip = reason === 'skip' || reason === 'stop';
-            const endedUnexpectedly = Boolean(finishedTrack) && !manualSkip && durationMs > 0 && totalPlaybackMs + 1500 < durationMs;
+            const endedUnexpectedly = Boolean(finishedTrack) && !manualSkip && durationMs > 0 && totalPlaybackMs + 5000 < durationMs;
 
             if (endedUnexpectedly) {
                 this.currentTrackRetries += 1;
