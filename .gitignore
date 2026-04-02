@@ -6,3 +6,4 @@ cookies.txt
 package-lock.json
 .env
 plans/
+database/playerState.json

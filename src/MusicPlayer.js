@@ -617,70 +617,23 @@ class MusicPlayer {
                 }
             }
 
-            // For YouTube, Spotify (via YouTube), SoundCloud (via YouTube) - use yt-dlp
-            if (track.platform === 'youtube' || track.platform === 'spotify' || track.platform === 'soundcloud') {
-                await YtDlp.download(downloadUrl, {
-                    output: filepath,
-                    format: 'bestaudio',
-                    noCheckCertificates: true,
-                    noWarnings: true,
-                    preferFreeFormats: true,
-                    addHeader: [
-                        'referer:youtube.com',
-                        'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                    ],
-                    postprocessorArgs: {
-                        'ffmpeg': ['-c:a', 'libopus', '-b:a', '128k']
-                    },
-                    extractAudio: true,
-                    audioFormat: 'opus'
-                });
-            } else {
-                // For DirectLink - fetch and transcode with FFmpeg
-                const fetch = await ensureFetch();
-                const response = await fetch(streamUrl, {
-                    headers: streamInfo?.httpHeaders || {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                    }
-                });
-
-                if (!response.ok) {
-                    this.downloadingFiles.delete(filepath);
-                    throw new Error(`Failed to fetch: ${response.status}`);
-                }
-
-                let audioStream;
-                if (typeof response.body?.getReader === 'function' && typeof Readable.fromWeb === 'function') {
-                    audioStream = Readable.fromWeb(response.body);
-                } else {
-                    audioStream = response.body;
-                }
-
-                // Transcode to opus
-                const ffmpegProcess = new prism.FFmpeg({
-                    command: ffmpegPath,
-                    env: ffmpegEnv,
-                    args: [
-                        '-i', 'pipe:0',
-                        '-f', 'opus',
-                        '-ar', '48000',
-                        '-ac', '2',
-                        '-b:a', '128k',
-                        '-y',
-                        filepath
-                    ]
-                });
-
-                audioStream.pipe(ffmpegProcess);
-
-                await new Promise((resolve, reject) => {
-                    ffmpegProcess.on('close', (code) => {
-                        if (code === 0) resolve();
-                        else reject(new Error(`FFmpeg exited with code ${code}`));
-                    });
-                    ffmpegProcess.on('error', reject);
-                });
-            }
+            // Use yt-dlp for all platforms including direct links
+            await YtDlp.download(downloadUrl, {
+                output: filepath,
+                format: 'bestaudio',
+                noCheckCertificates: true,
+                noWarnings: true,
+                preferFreeFormats: true,
+                addHeader: [
+                    'referer:youtube.com',
+                    'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                ],
+                postprocessorArgs: {
+                    'ffmpeg': ['-c:a', 'libopus', '-b:a', '128k']
+                },
+                extractAudio: true,
+                audioFormat: 'opus'
+            });
 
             // Verify file
             const stats = await fs.stat(filepath);
