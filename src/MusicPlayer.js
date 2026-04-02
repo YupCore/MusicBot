@@ -763,7 +763,7 @@ class MusicPlayer {
                         break;
 
                     case 'direct':
-                        streamInfo = await DirectLink.getStream(streamUrl, resumeFromSeconds);
+                        streamInfo = await DirectLink.getStream(streamUrl, this.guild.id, resumeFromSeconds);
                         break;
 
                     default:

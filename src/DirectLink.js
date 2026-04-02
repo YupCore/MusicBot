@@ -57,20 +57,19 @@ class DirectLink {
                 throw new Error(await LanguageManager.getTranslation(guildId, 'directlink.not_supported'));
             }
 
-            // Create a stream from the URL
-            const response = await axios({
-                method: 'GET',
-                url: url,
-                responseType: 'stream',
-                timeout: 30000,
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            // Return normalized stream metadata.
+            // Direct links are fetched by MusicPlayer, and seeking is handled by FFmpeg.
+            return {
+                url,
+                rawUrl: url,
+                canSeek: false,
+                type: 'arbitrary',
+                duration: 0,
+                bitrate: 0,
+                httpHeaders: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 }
-            });
-
-            // Note: Direct links typically don't support seek via URL
-            // Seeking will be handled by FFmpeg in MusicPlayer
-            return response.data;
+            };
 
         } catch (error) {
             throw error;

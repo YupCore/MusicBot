@@ -77,7 +77,10 @@ class MusicEmbedManager {
                         if (!player.connection) {
                             await player.connect();
                         }
-                        await player.play();
+                        const playResult = await player.play();
+                        if (!playResult || !playResult.success) {
+                            throw new Error(playResult?.message || 'Failed to start playback');
+                        }
 
                         // Yeni embed oluştur
                         firstTrackResult = await this.createNewMusicEmbed(player, track, member, interaction);
